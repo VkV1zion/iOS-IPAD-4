@@ -1,7 +1,7 @@
 name: Build Home Assistant iOS
 
 on:
-  workflow_dispatch:  # Permet de déclencher manuellement
+  workflow_dispatch:
   push:
     branches: [ main, master ]
 
@@ -26,41 +26,6 @@ jobs:
           pod install --repo-update
         fi
         
-    - name: Build Archive
-      run: |
-        # Si le projet utilise CocoaPods
-        if [ -f "HomeAssistant.xcworkspace" ]; then
-          SCHEME=$(xcodebuild -workspace HomeAssistant.xcworkspace -list | grep -A1 "Schemes:" | tail -1 | xargs)
-          xcodebuild -workspace HomeAssistant.xcworkspace \
-                     -scheme "$SCHEME" \
-                     -archivePath HomeAssistant.xcarchive \
-                     -configuration Release \
-                     -destination "generic/platform=iOS" \
-                     CODE_SIGN_IDENTITY="" \
-                     CODE_SIGNING_REQUIRED=NO \
-                     CODE_SIGNING_ALLOWED=NO \
-                     archive
-        else
-          # Si le projet utilise SPM uniquement
-          SCHEME=$(xcodebuild -project HomeAssistant.xcodeproj -list | grep -A1 "Schemes:" | tail -1 | xargs)
-          xcodebuild -project HomeAssistant.xcodeproj \
-                     -scheme "$SCHEME" \
-                     -archivePath HomeAssistant.xcarchive \
-                     -configuration Release \
-                     -destination "generic/platform=iOS" \
-                     CODE_SIGN_IDENTITY="" \
-                     CODE_SIGNING_REQUIRED=NO \
-                     CODE_SIGNING_ALLOWED=NO \
-                     archive
-        fi
-        
-    - name: Export IPA
-      run: |
-        xcodebuild -exportArchive \
-                   -archivePath HomeAssistant.xcarchive \
-                   -exportPath ./export \
-                   -exportOptionsPlist ExportOptions.plist
-                   
     - name: Create Export Options
       run: |
         cat > ExportOptions.plist << EOF
@@ -75,14 +40,113 @@ jobs:
             <key>compileBitcode</key>
             <false/>
             <key>signingStyle</key>
-            <string>automatic</string>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string></string>
+            <key>provisioningProfiles</key>
+            <dict></dict>
         </dict>
         </plist>
         EOF
+        
+    - name: Build Archive (iOS only, skip watchOS)
+      run: |
+        # Déterminer le workspace ou projet
+        if [ -f "HomeAssistant.xcworkspace" ]; then
+          PROJECT_FILE="HomeAssistant.xcworkspace"
+          PROJECT_FLAG="-workspace"
+        else
+          PROJECT_FILE="HomeAssistant.xcodeproj"
+          PROJECT_FLAG="-project"
+        fi
+        
+        # Lister les schémas disponibles
+        echo "Schémas disponibles:"
+        xcodebuild $PROJECT_FLAG "$PROJECT_FILE" -list
+        
+        # Essayer de compiler avec le schéma principal (App)
+        xcodebuild $PROJECT_FLAG "$PROJECT_FILE" \
+                   -scheme "App" \
+                   -archivePath HomeAssistant.xcarchive \
+                   -configuration Release \
+                   -destination "generic/platform=iOS" \
+                   -derivedDataPath ./DerivedData \
+                   SKIP_INSTALL=NO \
+                   BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+                   CODE_SIGN_IDENTITY="" \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGNING_ALLOWED=NO \
+                   PROVISIONING_PROFILE_SPECIFIER="" \
+                   DEVELOPMENT_TEAM="" \
+                   archive || {
+          
+          echo "Échec avec App, essayons App-Beta..."
+          xcodebuild $PROJECT_FLAG "$PROJECT_FILE" \
+                     -scheme "App-Beta" \
+                     -archivePath HomeAssistant.xcarchive \
+                     -configuration Release \
+                     -destination "generic/platform=iOS" \
+                     -derivedDataPath ./DerivedData \
+                     SKIP_INSTALL=NO \
+                     BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+                     CODE_SIGN_IDENTITY="" \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     PROVISIONING_PROFILE_SPECIFIER="" \
+                     DEVELOPMENT_TEAM="" \
+                     archive || {
+            
+            echo "Échec avec App-Beta, essayons de compiler uniquement iOS..."
+            xcodebuild $PROJECT_FLAG "$PROJECT_FILE" \
+                       -scheme "App" \
+                       -archivePath HomeAssistant.xcarchive \
+                       -configuration Release \
+                       -destination "generic/platform=iOS" \
+                       -derivedDataPath ./DerivedData \
+                       SKIP_INSTALL=NO \
+                       BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+                       EXCLUDED_ARCHS="watchos" \
+                       SUPPORTED_PLATFORMS="iphoneos iphonesimulator" \
+                       CODE_SIGN_IDENTITY="" \
+                       CODE_SIGNING_REQUIRED=NO \
+                       CODE_SIGNING_ALLOWED=NO \
+                       PROVISIONING_PROFILE_SPECIFIER="" \
+                       DEVELOPMENT_TEAM="" \
+                       archive
+          }
+        }
+        
+    - name: Export IPA
+      run: |
+        xcodebuild -exportArchive \
+                   -archivePath HomeAssistant.xcarchive \
+                   -exportPath ./export \
+                   -exportOptionsPlist ExportOptions.plist \
+                   -allowProvisioningUpdates || {
+          
+          echo "Export avec ExportOptions.plist a échoué, essayons sans..."
+          mkdir -p export
+          cp -r HomeAssistant.xcarchive/Products/Applications/*.app export/
+          
+          # Créer un IPA manuellement
+          cd export
+          APP_NAME=$(ls *.app | head -1)
+          mkdir Payload
+          mv "$APP_NAME" Payload/
+          zip -r HomeAssistant.ipa Payload/
+          rm -rf Payload
+        }
+        
+    - name: List export contents
+      run: |
+        echo "Contenu du dossier export:"
+        ls -la export/
         
     - name: Upload IPA
       uses: actions/upload-artifact@v4
       with:
         name: HomeAssistant-IPA
-        path: export/*.ipa
+        path: |
+          export/*.ipa
+          export/*.app
         retention-days: 30
