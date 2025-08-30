@@ -49,6 +49,21 @@ jobs:
         </plist>
         EOF
         
+    - name: List available schemes
+      run: |
+        # Déterminer le workspace ou projet
+        if [ -f "HomeAssistant.xcworkspace" ]; then
+          PROJECT_FILE="HomeAssistant.xcworkspace"
+          PROJECT_FLAG="-workspace"
+        else
+          PROJECT_FILE="HomeAssistant.xcodeproj"
+          PROJECT_FLAG="-project"
+        fi
+        
+        echo "Fichier de projet détecté: $PROJECT_FILE"
+        echo "Schémas disponibles:"
+        xcodebuild $PROJECT_FLAG "$PROJECT_FILE" -list
+        
     - name: Build Archive (iOS only, skip watchOS)
       run: |
         # Déterminer le workspace ou projet
@@ -60,13 +75,13 @@ jobs:
           PROJECT_FLAG="-project"
         fi
         
-        # Lister les schémas disponibles
-        echo "Schémas disponibles:"
-        xcodebuild $PROJECT_FLAG "$PROJECT_FILE" -list
+        # Extraire le premier schéma iOS disponible
+        SCHEME=$(xcodebuild $PROJECT_FLAG "$PROJECT_FILE" -list | grep -A 100 "Schemes:" | grep -v "Schemes:" | grep -v "^$" | head -1 | xargs)
+        echo "Utilisation du schéma: $SCHEME"
         
-        # Essayer de compiler avec le schéma principal (App)
+        # Essayer de compiler avec le schéma détecté
         xcodebuild $PROJECT_FLAG "$PROJECT_FILE" \
-                   -scheme "App" \
+                   -scheme "$SCHEME" \
                    -archivePath HomeAssistant.xcarchive \
                    -configuration Release \
                    -destination "generic/platform=iOS" \
